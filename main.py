@@ -1,27 +1,31 @@
-# Render test: GET /?mid=<MID>&ref=<txn ref>  ->  what Paytm's status API answers to THIS server's IP (and the IP itself)
-import json, os, urllib.parse, urllib.request, urllib.error
-from http.server import BaseHTTPRequestHandler, HTTPServer
+# Paytm status relay for Render: GET /status?mid=<MID>&ref=<txn ref> -> Paytm's JSON, fetched from this server's IP.
+# (Paytm refuses data-center IPs of Cloudflare and Oracle; Render's works.)
+import json, os, re, urllib.error, urllib.parse, urllib.request
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
-def get(url):
-    try:
-        r = urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": UA}), timeout=15)
-        return r.status, r.read(3000).decode("utf8", "replace")
-    except urllib.error.HTTPError as e:
-        return e.code, e.read(80).decode("utf8", "replace")
-    except Exception as e:
-        return 0, str(e)
-
 class H(BaseHTTPRequestHandler):
-    def do_GET(self):
-        q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
-        mid, ref = q.get("mid", [""])[0], q.get("ref", [""])[0]
-        out = {"my_ip": get("https://api.ipify.org")[1]}
-        if mid and ref:
-            j = urllib.parse.quote(json.dumps({"MID": mid, "ORDERID": ref}))
-            code, body = get(f"https://secure.paytmpayments.com/order/status?JsonData={j}")
-            out.update(paytm_http=code, paytm_status=(json.loads(body).get("STATUS") if code == 200 and body.startswith("{") else body[:60]))
-        self.send_response(200); self.send_header("content-type", "application/json"); self.end_headers()
-        self.wfile.write(json.dumps(out).encode())
+    def reply(self, code, body):
+        self.send_response(code); self.send_header("content-type", "application/json"); self.end_headers()
+        self.wfile.write(body if isinstance(body, bytes) else json.dumps(body).encode())
 
-HTTPServer(("0.0.0.0", int(os.getenv("PORT", "10000"))), H).serve_forever()
+    def do_GET(self):
+        u = urllib.parse.urlparse(self.path); q = {k: v[0] for k, v in urllib.parse.parse_qs(u.query).items()}
+        if u.path != "/status":
+            return self.reply(200, {"ok": True})  # health check / keep-alive ping
+        mid, ref = q.get("mid", ""), q.get("ref", "")
+        if not re.fullmatch(r"[A-Za-z0-9]{10,30}", mid) or not re.fullmatch(r"\d{6,30}", ref):
+            return self.reply(400, {"error": "bad mid/ref"})
+        j = urllib.parse.quote(json.dumps({"MID": mid, "ORDERID": ref}))
+        try:
+            r = urllib.request.urlopen(urllib.request.Request(f"https://secure.paytmpayments.com/order/status?JsonData={j}", headers={"User-Agent": UA}), timeout=15)
+            self.reply(200, r.read())
+        except urllib.error.HTTPError as e:
+            self.reply(502, {"error": "paytm", "http": e.code})
+        except Exception as e:
+            self.reply(502, {"error": str(e)[:100]})
+
+    def log_message(self, *a):
+        pass
+
+ThreadingHTTPServer(("0.0.0.0", int(os.getenv("PORT", "10000"))), H).serve_forever()
