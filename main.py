@@ -6,7 +6,7 @@ UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like 
 def get(url):
     try:
         r = urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": UA}), timeout=15)
-        return r.status, r.read(200).decode("utf8", "replace")
+        return r.status, r.read(3000).decode("utf8", "replace")
     except urllib.error.HTTPError as e:
         return e.code, e.read(80).decode("utf8", "replace")
     except Exception as e:
